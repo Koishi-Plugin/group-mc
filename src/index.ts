@@ -46,27 +46,33 @@ export interface Config {
   recordFile: boolean
   keywordRule: false | string
   timeMute: false | string
+  timeRange: string
   voteBan: boolean
 }
 
-export const Config: Schema<Config> = Schema.object({
-  recordFile: Schema.boolean().default(false).description('报告记录'),
-  keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_GROUPS),
-  timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
-  voteBan: Schema.boolean().default(false).description('投票群管'),
-})
+export const Config: Schema<Config> = Schema.intersect([
+  Schema.object({
+    recordFile: Schema.boolean().default(false).description('报告记录'),
+    voteBan: Schema.boolean().default(false).description('投票群管'),
+    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_GROUPS),
+    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
+  }).description('功能配置'),
+  Schema.object({
+    timeRange: Schema.string().description('宵禁时间').default('23-7'),
+  }).description('参数配置'),
+])
 
 export function apply(context: Context, config: Config) {
+  const parse = (str: string) => str.split(/[,，]/).map(v => v.trim()).filter(Boolean)
   const validate = (session: Session, allowedGroups: string[], requireAdmin = false): boolean => {
     if (!session.guildId || !session.userId || !allowedGroups.includes(session.guildId)) return false
     if (requireAdmin && !ADMIN_LIST.includes(session.userId)) return false
     return true
   }
-  const parse = (str: string) => str.split(/[,，]/).map(v => v.trim()).filter(Boolean)
 
   const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate) : null
+  const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
   const record = config.recordFile ? new FileRecord(context, validate) : null
-  const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), validate) : null
   const vote = config.voteBan ? new VoteRule(context, validate) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
