@@ -31,10 +31,12 @@ export class FileRecord {
   private statePath: string
   private fileIndex: Record<string, string> = {}
   private activeFiles: Record<string, Record<string, ActiveFile>> = {}
-  private targetGroups: string[] = ['666546887', '978054335', '958853931']
-  private adminList: { userId: string; nickname?: string }[] = []
+  private targetGroups = ['666546887', '978054335', '958853931']
 
-  constructor(private context: Context) {
+  constructor(
+    private context: Context,
+    private validate: (session: Session, groups: string[], admin?: boolean) => boolean
+  ) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
     this.recordFolder = join(folderPath, 'logs')
     this.statePath = join(folderPath, 'logs_state.json')
@@ -61,9 +63,8 @@ export class FileRecord {
   }
 
   async receiveFile(element: any, session: Session): Promise<void> {
+    if (!this.validate(session, this.targetGroups)) return
     const { channelId, userId, messageId } = session
-    const { targetGroups } = this
-    if (!channelId || !userId || !targetGroups.includes(channelId)) return
 
     let fileInfo: { name: string; size: number; url: string } | null = null
     const sourceMessage = await session.bot.internal.getMsg(messageId).catch(() => null)
@@ -78,7 +79,7 @@ export class FileRecord {
       if (file && attrSize && src) fileInfo = { name: file, size: parseInt(attrSize, 10), url: src }
     }
 
-    if (fileInfo) await this.downloadFile(fileInfo.name, fileInfo.size, fileInfo.url, channelId, userId)
+    if (fileInfo) await this.downloadFile(fileInfo.name, fileInfo.size, fileInfo.url, channelId!, userId!)
   }
 
   async receiveMessage(session: Session): Promise<void> {
@@ -87,11 +88,11 @@ export class FileRecord {
       await this.receiveFile(fileElement, session)
     }
 
+    if (!this.validate(session, this.targetGroups)) return
     const { channelId, userId } = session
-    const { targetGroups, activeFiles } = this
-    if (!channelId || !userId || !targetGroups.includes(channelId)) return
+    const { activeFiles } = this
 
-    const matchedTargets = this.findTargets(channelId, userId, session)
+    const matchedTargets = this.findTargets(channelId!, userId!, session)
     if (!matchedTargets.length) return
 
     const messageContent = await this.buildContent(session, matchedTargets[0].recordId)
@@ -102,8 +103,8 @@ export class FileRecord {
     let dataChanged = false
 
     for (const target of matchedTargets) {
-      await this.appendMessage(target.recordId, { content: finalContent, userId })
-      const activeData = activeFiles[channelId]?.[target.uploaderId]
+      await this.appendMessage(target.recordId, { content: finalContent, userId: userId! })
+      const activeData = activeFiles[channelId!]?.[target.uploaderId]
       if (activeData && activeData.recordId === target.recordId) {
         activeData.timestamp = currentTime
         dataChanged = true
@@ -114,7 +115,7 @@ export class FileRecord {
   }
 
   private findTargets(channelId: string, userId: string, session: Session): FileTarget[] {
-    const { activeFiles, adminList } = this
+    const { activeFiles, targetGroups } = this
     const currentTime = Date.now()
     const referenceId = session.elements?.find(element => element.type === 'at')?.attrs?.id
       ?? (session.event as any).message?.quote?.user?.id
@@ -126,7 +127,7 @@ export class FileRecord {
       return infoData ? [{ recordId: infoData.recordId, uploaderId: referenceId }] : []
     }
 
-    if (adminList.some(admin => admin.userId === userId)) {
+    if (this.validate(session, targetGroups, true)) {
       return Object.entries(channelData)
         .filter(([, infoData]) => currentTime - infoData.timestamp <= 2 * 60 * 1000)
         .map(([uploaderId, infoData]) => ({ recordId: infoData.recordId, uploaderId }))

@@ -1,16 +1,18 @@
 import { Context, Session } from 'koishi'
 
 export class AutoMute {
-  private muteGroups: string[] = ['666546887', '978054335']
   private mutePeriod: string = '23-7'
-  private adminList: { userId: string; nickname?: string }[] = []
   private recentActivity = new Map<string, number>()
   private muteStatus = new Map<string, boolean>()
   private memberHooks = new Map<string, () => void>()
   private scheduleTimer?: NodeJS.Timeout
   private checkTimer?: NodeJS.Timeout
 
-  constructor(private context: Context) {
+  constructor(
+    private context: Context,
+    private targetGroups: string[],
+    private validate: (session: Session, groups: string[], admin?: boolean) => boolean
+  ) {
     const timeFrame = this.parsePeriod()
     if (timeFrame) this.planSchedule(timeFrame)
   }
@@ -49,9 +51,9 @@ export class AutoMute {
   }
 
   private async endMute(): Promise<void> {
-    const { muteGroups, muteStatus } = this
+    const { targetGroups, muteStatus } = this
     if (this.checkTimer) clearInterval(this.checkTimer)
-    for (const groupId of muteGroups) {
+    for (const groupId of targetGroups) {
       if (muteStatus.get(groupId)) await this.toggleMute(groupId, false)
     }
     const timeFrame = this.parsePeriod()
@@ -59,9 +61,9 @@ export class AutoMute {
   }
 
   private async checkActivity(): Promise<void> {
-    const { muteGroups, muteStatus, recentActivity } = this
+    const { targetGroups, muteStatus, recentActivity } = this
     const timeThreshold = Date.now() - 15 * 60 * 1000
-    for (const groupId of muteGroups) {
+    for (const groupId of targetGroups) {
       const lastTime = recentActivity.get(groupId) ?? 0
       if (!muteStatus.get(groupId) && lastTime < timeThreshold) {
         await this.toggleMute(groupId, true)
@@ -70,10 +72,8 @@ export class AutoMute {
   }
 
   public async recordActivity(session: Session): Promise<void> {
-    const { guildId, userId } = session
-    const { muteGroups, adminList, recentActivity } = this
-    if (guildId && userId && muteGroups.includes(guildId) && adminList.some(admin => admin.userId === userId)) {
-      recentActivity.set(guildId, Date.now())
+    if (this.validate(session, this.targetGroups, true)) {
+      this.recentActivity.set(session.guildId!, Date.now())
     }
   }
 

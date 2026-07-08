@@ -13,22 +13,27 @@ interface VotePoll {
 
 export class VoteRule {
   private voteMap = new Map<string, VotePoll>()
-  private voteChannel: string = ''
-  private voteWhitelist: string[] = []
   private voteThreshold: string = '3:1'
   private voteTimeout: number = 0
+  private targetGroups = ['978519342']
 
-  constructor(private context: Context) {}
+  constructor(
+    private context: Context,
+    private validate: (session: Session, groups: string[], admin?: boolean) => boolean
+  ) {}
 
   registerCommands(rootCommand: any): void {
     rootCommand.subcommand('vote', '投票踢人或禁言')
       .option('time', '-t <time:number>', { fallback: 60 })
       .option('ban', '-b', { fallback: false })
-      .action(({ session, options }: { session: Session; options: { time?: number; ban?: boolean } }) => this.startVote(session, options))
+      .action(({ session, options }: { session: Session; options: { time?: number; ban?: boolean } }) => {
+        if (!this.validate(session, this.targetGroups, true)) return
+        return this.startVote(session, options)
+      })
   }
 
   private finishVote(pollKey: string, pollData: VotePoll, resultType: 'approve' | 'reject' | 'timeout', replySession?: Session, prefixString = '') {
-    const { voteMap, voteChannel } = this
+    const { voteMap, targetGroups } = this
     if (pollData.pollTimer) clearTimeout(pollData.pollTimer)
     voteMap.delete(pollKey)
 
@@ -36,7 +41,7 @@ export class VoteRule {
     const guildId = session.guildId
     if (!session.bot || !guildId) return
 
-    const targetChannel = voteChannel || guildId
+    const targetChannel = targetGroups[0]
     const sendMessage = (messageText: string) =>
       replySession
         ? replySession.send(prefixString + (prefixString ? '\n' : '') + messageText).catch(() => {})
@@ -55,14 +60,14 @@ export class VoteRule {
   }
 
   public async startVote(session: Session, options: { time?: number; ban?: boolean }): Promise<void> {
-    const { voteWhitelist, voteChannel, voteMap, voteTimeout, voteThreshold } = this
+    const { voteMap, voteTimeout, voteThreshold, targetGroups } = this
     const { userId, guildId, selfId, quote } = session
     if (!guildId || !userId || !quote?.user?.id) return
-    if (voteWhitelist.length > 0 && !voteWhitelist.includes(userId)) return
 
-    if (voteChannel) {
+    const targetChannel = targetGroups[0]
+    if (targetChannel) {
       try {
-        await session.bot.getGuildMember(voteChannel, userId)
+        await session.bot.getGuildMember(targetChannel, userId)
       } catch {
         return
       }
@@ -82,13 +87,12 @@ export class VoteRule {
     const limitParts = voteThreshold.split(':').map(Number)
     const approveLimit = limitParts[0]
     const rejectLimit = limitParts[1]
-    const targetChannel = voteChannel || guildId
 
     const alertMessage = `${guildName} (${guildId})\n${targetName} (${targetId})\n${voteTimeout > 0 ? `${voteTimeout}分钟` : '无限时'}→${finalDuration > 0 ? `禁言${finalDuration}分钟` : '踢出'}\n引用回复: y/同意(${approveLimit}) | n/拒绝(${rejectLimit})`
 
     const pollData: VotePoll = { session, targetId, targetName, messageId: '', duration: finalDuration, approveSet: new Set(), rejectSet: new Set() }
 
-    if (voteChannel && voteChannel !== guildId) {
+    if (targetChannel && targetChannel !== guildId) {
       await session.bot.internal.sendGroupForwardMsg(Number(targetChannel), [{ type: 'node', data: { name: targetName, uin: targetId, content: quote.content } }]).catch(() => {})
     }
 
@@ -112,11 +116,12 @@ export class VoteRule {
   }
 
   public async checkMessage(session: Session): Promise<void> {
-    const { voteWhitelist, voteChannel, voteMap, voteThreshold } = this
+    if (!this.validate(session, this.targetGroups, true)) return
+
+    const { voteMap, voteThreshold, targetGroups } = this
     const { userId, quote, guildId, content } = session
-    const targetChannel = voteChannel || guildId
+    const targetChannel = targetGroups[0]
     if (!userId || !quote?.id || !guildId || guildId !== targetChannel) return
-    if (voteWhitelist.length > 0 && !voteWhitelist.includes(userId)) return
 
     const activePoll = [...voteMap.entries()].find(([, data]) => data.messageId === quote.id)
     if (!activePoll) return

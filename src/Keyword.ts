@@ -15,9 +15,12 @@ export class Keyword {
   private quoteMessage: boolean = true
   private mentionUser: boolean = false
   private forwardTarget: string = ''
-  private adminList: { userId: string; nickname?: string }[] = []
 
-  constructor(private context: Context) {
+  constructor(
+    private context: Context,
+    private targetGroups: string[],
+    private validate: (session: Session, groups: string[], admin?: boolean) => boolean
+  ) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
     this.targetFile = join(folderPath, 'keyword.json')
     this.loadData()
@@ -69,12 +72,11 @@ export class Keyword {
   }
 
   registerCommands(rootCommand: any): void {
-    const { adminList } = this
     const keywordCommand = rootCommand.subcommand('keyword', '关键词管理')
 
     keywordCommand.subcommand('.add <action:string> <keyword:string> [content:text]', '添加关键词 (action为 reply/forward)')
       .action(async ({ session }: { session: Session }, action: string, keyword: string, content: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         if (action !== 'reply' && action !== 'forward') return '操作类型必须为 reply 或 forward'
         if (!keyword) return '请提供关键词'
         if (action === 'reply' && !content) return '回复模式下请提供回复内容'
@@ -83,33 +85,32 @@ export class Keyword {
 
     keywordCommand.subcommand('.remove <action:string> <keyword:string>', '删除关键词')
       .action(({ session }: { session: Session }, action: string, keyword: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         return this.removeItem(action, keyword)
       })
 
     keywordCommand.subcommand('.rename <action:string> <oldKeyword:string> <newKeyword:string>', '重命名关键词')
       .action(({ session }: { session: Session }, action: string, oldKeyword: string, newKeyword: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         return this.renameItem(action, oldKeyword, newKeyword)
       })
 
     keywordCommand.subcommand('.list [action:string]', '查看关键词列表')
       .action(({ session }: { session: Session }, action: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         return this.listItems(action)
       })
 
     keywordCommand.subcommand('.regex <action:string> <keyword:string> [pattern:text]', '配置正则匹配')
       .action(({ session }: { session: Session }, action: string, keyword: string, pattern: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         return this.updateRegex(action, keyword, pattern)
       })
 
     keywordCommand.subcommand('.send <keyword:string> [target:string] [value:text]', '发送预设回复')
       .action(async ({ session }: { session: Session }, keyword: string, target: string, value: string) => {
-        if (!adminList.some(admin => admin.userId === session.userId)) return
+        if (!this.validate(session, this.targetGroups, true)) return
         if (!keyword) return '请提供预设关键词'
-        // 修复：增加对 channelId 和 messageId 的非空检查
         if (session.channelId && session.messageId) {
           await session.bot.deleteMessage(session.channelId, session.messageId).catch(() => {})
         }
@@ -181,6 +182,8 @@ export class Keyword {
   }
 
   async receiveMessage(session: Session): Promise<void> {
+    if (!this.validate(session, this.targetGroups)) return
+
     const { itemList, forwardTarget } = this
     if (!itemList.length) return
     const textContent = session.content
