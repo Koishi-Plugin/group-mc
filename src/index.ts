@@ -59,8 +59,8 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     recordFile: Schema.boolean().default(false).description('报告记录'),
     voteBan: Schema.boolean().default(false).description('投票群管'),
-    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default('633640264, 203232161, 201034984, 533529045, 744304553, 282845310, 482624681, 991620626, 657677715, 775084843'),
-    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default('666546887, 978054335, 958853931'),
+    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_GROUPS),
+    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
   }).description('功能配置'),
   Schema.object({
     timeRange: Schema.string().default('23-7').description('宵禁时间'),
