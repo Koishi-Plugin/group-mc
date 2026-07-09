@@ -44,10 +44,12 @@ const ADMIN_LIST = [
 
 export interface Config {
   recordFile: boolean
+  voteBan: boolean
   keywordRule: false | string
   timeMute: false | string
   timeRange: string
-  voteBan: boolean
+  enableOcr: boolean
+  replyMode: 'none' | 'quote' | 'at'
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -59,6 +61,8 @@ export const Config: Schema<Config> = Schema.intersect([
   }).description('功能配置'),
   Schema.object({
     timeRange: Schema.string().description('宵禁时间').default('23-7'),
+    enableOcr: Schema.boolean().default(false).description('图片识别'),
+    replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).description('回复方式').default('quote'),
   }).description('参数配置'),
 ])
 
@@ -66,11 +70,10 @@ export function apply(context: Context, config: Config) {
   const parse = (str: string) => str.split(/[,，]/).map(v => v.trim()).filter(Boolean)
   const validate = (session: Session, allowedGroups: string[], requireAdmin = false): boolean => {
     if (!session.guildId || !session.userId || !allowedGroups.includes(session.guildId)) return false
-    if (requireAdmin && !ADMIN_LIST.includes(session.userId)) return false
-    return true
+    return !(requireAdmin && !ADMIN_LIST.includes(session.userId))
   }
 
-  const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate) : null
+  const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate, config.replyMode, config.enableOcr) : null
   const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
   const record = config.recordFile ? new FileRecord(context, validate) : null
   const vote = config.voteBan ? new VoteRule(context, validate) : null
