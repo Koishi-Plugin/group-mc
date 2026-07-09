@@ -51,6 +51,7 @@ export interface Config {
   enableOcr: boolean
   replyMode: 'none' | 'quote' | 'at'
   recordTime: number
+  voteRatio: string
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -65,6 +66,7 @@ export const Config: Schema<Config> = Schema.intersect([
     enableOcr: Schema.boolean().default(false).description('图片识别'),
     replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).default('quote').description('回复方式'),
     recordTime: Schema.number().default(2).description('记录时间'),
+    voteRatio: Schema.string().default('3:1').description('投票比例'),
   }).description('参数配置'),
 ])
 
@@ -78,7 +80,7 @@ export function apply(context: Context, config: Config) {
   const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate, config.replyMode, config.enableOcr) : null
   const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
   const record = config.recordFile ? new FileRecord(context, validate, config.recordTime) : null
-  const vote = config.voteBan ? new VoteRule(validate) : null
+  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
   keyword?.registerCommands(root)
