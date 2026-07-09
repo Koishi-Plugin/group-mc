@@ -3,7 +3,6 @@ import { promises as fs } from 'fs'
 import { Context, Session } from 'koishi'
 
 const FILE_TYPES = ['.zip', '.log', '.txt', '.json', '.gz', '.xz']
-const TARGET_GROUPS = ['666546887', '978054335', '958853931']
 
 export class FileRecord {
   private recordFolder: string
@@ -11,7 +10,7 @@ export class FileRecord {
   private activeFiles: Record<string, Record<string, [string, number]>> = {}
   private queues: Map<string, Promise<void>> = new Map()
 
-  constructor(private context: Context, private validate: (session: Session, groups: string[], admin?: boolean) => boolean, private timeout: number) {
+  constructor(private context: Context, private targetGroups: string[], private validate: (session: Session, groups: string[], admin?: boolean) => boolean, private timeout: number) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
     this.recordFolder = join(folderPath, 'logs')
     this.statePath = join(folderPath, 'logs.json')
@@ -31,7 +30,7 @@ export class FileRecord {
   }
 
   async receiveFile(element: any, session: Session): Promise<void> {
-    if (!this.validate(session, TARGET_GROUPS)) return
+    if (!this.validate(session, this.targetGroups)) return
     const { channelId, userId, messageId } = session
     let fileInfo: { name: string; size: number; url: string } | null = null
     const sourceMessage = await session.bot.internal.getMsg(messageId).catch(() => null)
@@ -68,7 +67,7 @@ export class FileRecord {
   async receiveMessage(session: Session): Promise<void> {
     const fileElement = session.elements?.find(element => element.type === 'file')
     if (fileElement) await this.receiveFile(fileElement, session)
-    if (!this.validate(session, TARGET_GROUPS)) return
+    if (!this.validate(session, this.targetGroups)) return
     const { channelId, userId } = session
     const currentTime = Date.now()
     const channelData = this.activeFiles[channelId!] || {}
@@ -76,7 +75,7 @@ export class FileRecord {
     let targets: { recordId: string; uploaderId: string }[] = []
     if (referenceId && channelData[referenceId]) {
       targets = [{ recordId: channelData[referenceId][0], uploaderId: referenceId }]
-    } else if (this.validate(session, TARGET_GROUPS, true)) {
+    } else if (this.validate(session, this.targetGroups, true)) {
       targets = Object.entries(channelData)
         .filter(([, info]) => currentTime - info[1] <= this.timeout * 60000)
         .map(([uId, info]) => ({ recordId: info[0], uploaderId: uId }))

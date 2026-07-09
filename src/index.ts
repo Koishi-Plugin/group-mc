@@ -52,14 +52,15 @@ export interface Config {
   replyMode: 'none' | 'quote' | 'at'
   recordTime: number
   voteRatio: string
+  extraGroup: string
 }
 
 export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     recordFile: Schema.boolean().default(false).description('报告记录'),
     voteBan: Schema.boolean().default(false).description('投票群管'),
-    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_GROUPS),
-    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
+    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default('633640264, 203232161, 201034984, 533529045, 744304553, 282845310, 482624681, 991620626, 657677715, 775084843'),
+    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default('666546887, 978054335, 958853931'),
   }).description('功能配置'),
   Schema.object({
     timeRange: Schema.string().default('23-7').description('宵禁时间'),
@@ -67,20 +68,22 @@ export const Config: Schema<Config> = Schema.intersect([
     replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).default('quote').description('回复方式'),
     recordTime: Schema.number().default(2).description('记录时间'),
     voteRatio: Schema.string().default('3:1').description('投票比例'),
+    extraGroup: Schema.string().default('').description('调试群组'),
   }).description('参数配置'),
 ])
 
 export function apply(context: Context, config: Config) {
+  const extraGroup = config.extraGroup ? [config.extraGroup] : []
   const parse = (str: string) => str.split(/[,，]/).map(v => v.trim()).filter(Boolean)
   const validate = (session: Session, allowedGroups: string[], requireAdmin = false): boolean => {
     if (!session.guildId || !session.userId || !allowedGroups.includes(session.guildId)) return false
     return !(requireAdmin && !ADMIN_LIST.includes(session.userId))
   }
 
-  const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate, config.replyMode, config.enableOcr) : null
-  const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
-  const record = config.recordFile ? new FileRecord(context, validate, config.recordTime) : null
-  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio) : null
+  const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, [...parse(config.keywordRule), ...extraGroup], validate, config.replyMode, config.enableOcr) : null
+  const mute = typeof config.timeMute === 'string' ? new AutoMute(context, [...parse(config.timeMute), ...extraGroup], ADMIN_LIST, config.timeRange) : null
+  const record = config.recordFile ? new FileRecord(context, [...parse(ERROR_GROUPS), ...extraGroup], validate, config.recordTime) : null
+  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio, [...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342', ...extraGroup]) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
   keyword?.registerCommands(root)
@@ -88,7 +91,8 @@ export function apply(context: Context, config: Config) {
 
   if (config.timeMute || config.recordFile || config.keywordRule || config.voteBan) {
     context.on('message', async (session: Session) => {
-      if (!session.guildId || !Array.from(new Set([...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342'])).includes(session.guildId)) return
+      const groups = Array.from(new Set([...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342', ...extraGroup]))
+      if (!session.guildId || !groups.includes(session.guildId)) return
       await vote?.receiveMessage(session)
       await mute?.recordActivity(session)
       await record?.receiveMessage(session)

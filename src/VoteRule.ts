@@ -8,7 +8,7 @@ const GROUP_LIST: Record<number, string> = {
 export class VoteRule {
   private activeVotes = new Map<string, { guildId: string, guildName: string, targetId: string, targetName: string,
     messageId: string, duration: number, approvers: Set<string>, rejecters: Set<string>, timer: NodeJS.Timeout }>()
-  constructor(private checkPermission: (session: Session, groups: string[], requireAdmin?: boolean) => boolean, private ratio: string) {}
+  constructor(private checkPermission: (session: Session, groups: string[], requireAdmin?: boolean) => boolean, private ratio: string, private allowedGroups: string[]) {}
 
   registerCommands(root: any) {
     root.subcommand('vote <id:number> <targetId:string>', '发起投票')
@@ -31,9 +31,8 @@ export class VoteRule {
       .usage('回复指定消息来撤回对应内容。')
       .action(async ({ session }: { session: Session }) => {
         if (!session.quote?.id) return '请回复需要撤回的消息'
-        const allowedGroups = ['633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843', '1028074835', '1070029541', '666546887', '978054335', '958853931', '978519342']
         const isManager = await session.bot.getGuildMember('978519342', session.userId!).then(() => true).catch(() => false)
-        if (!isManager || !this.checkPermission(session, allowedGroups)) return
+        if (!isManager || !this.checkPermission(session, this.allowedGroups)) return
         try { await (session as any).onebot.deleteMsg(session.quote.id) } catch (error) {}
       })
   }
