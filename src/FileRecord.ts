@@ -2,233 +2,116 @@ import { join, parse } from 'path'
 import { promises as fs } from 'fs'
 import { Context, Session } from 'koishi'
 
-interface MessageRecord {
-  content: string
-  userId: string
-}
-
-interface FileTarget {
-  recordId: string
-  uploaderId: string
-}
-
-interface ActiveFile {
-  recordId: string
-  timestamp: number
-}
-
-interface RecordState {
-  fileIndex: Record<string, string>
-  activeFiles: Record<string, Record<string, ActiveFile>>
-}
-
 const FILE_TYPES = ['.zip', '.log', '.txt', '.json', '.gz', '.xz']
-const IMAGE_TYPES = ['.jpg', '.jpeg', '.png']
-const CROSSTALK_TAG = '[交叉对话] '
+const TARGET_GROUPS = ['666546887', '978054335', '958853931']
 
 export class FileRecord {
   private recordFolder: string
   private statePath: string
-  private fileIndex: Record<string, string> = {}
-  private activeFiles: Record<string, Record<string, ActiveFile>> = {}
-  private targetGroups = ['666546887', '978054335', '958853931']
+  private activeFiles: Record<string, Record<string, { recordId: string; timestamp: number }>> = {}
 
-  constructor(
-    private context: Context,
-    private validate: (session: Session, groups: string[], admin?: boolean) => boolean
-  ) {
+  constructor(private context: Context, private validate: (session: Session, groups: string[], admin?: boolean) => boolean, private timeout: number) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
     this.recordFolder = join(folderPath, 'logs')
-    this.statePath = join(folderPath, 'logs_state.json')
-    this.loadState()
-  }
+    this.statePath = join(folderPath, 'logs.json')
 
-  private async loadState(): Promise<void> {
-    try {
-      const fileData = await fs.readFile(this.statePath, 'utf-8')
-      const stateData = JSON.parse(fileData) as RecordState
-      this.fileIndex = stateData.fileIndex || {}
-      this.activeFiles = stateData.activeFiles || {}
-    } catch (error: any) {
-      if (error.code !== 'ENOENT') this.context.logger.error('初始化文件记录状态失败:', error)
-      this.fileIndex = {}
-      this.activeFiles = {}
-    }
+    fs.readFile(this.statePath, 'utf-8')
+      .then((data) => {
+        const state = JSON.parse(data)
+        this.activeFiles = state.activeFiles || {}
+      }).catch((error: any) => { if (error.code !== 'ENOENT') this.context.logger.error('初始化失败:', error) })
   }
 
   private async saveState(): Promise<void> {
-    const { statePath, fileIndex, activeFiles } = this
-    await fs.mkdir(parse(statePath).dir, { recursive: true })
-    await fs.writeFile(statePath, JSON.stringify({ fileIndex, activeFiles } as RecordState, null, 2))
+    try {
+      await fs.mkdir(parse(this.statePath).dir, { recursive: true })
+      await fs.writeFile(this.statePath, JSON.stringify({ activeFiles: this.activeFiles }, null, 2))
+    } catch (error: any) {
+      this.context.logger.error('保存记录失败:', error)
+    }
   }
 
   async receiveFile(element: any, session: Session): Promise<void> {
-    if (!this.validate(session, this.targetGroups)) return
+    if (!this.validate(session, TARGET_GROUPS)) return
     const { channelId, userId, messageId } = session
-
     let fileInfo: { name: string; size: number; url: string } | null = null
     const sourceMessage = await session.bot.internal.getMsg(messageId).catch(() => null)
-    const messageData = sourceMessage && Array.isArray(sourceMessage.message)
-      ? sourceMessage.message.find((node: any) => node.type === 'file')?.data
-      : null
-
+    const messageData = sourceMessage && Array.isArray(sourceMessage.message) ? sourceMessage.message.find((node: any) => node.type === 'file')?.data : null
     if (messageData?.file && messageData.file_size && messageData.url) {
       fileInfo = { name: messageData.file, size: parseInt(messageData.file_size, 10), url: messageData.url }
     } else {
       const { file, 'file-size': attrSize, src } = element.attrs
       if (file && attrSize && src) fileInfo = { name: file, size: parseInt(attrSize, 10), url: src }
     }
-
-    if (fileInfo) await this.downloadFile(fileInfo.name, fileInfo.size, fileInfo.url, channelId!, userId!)
+    if (!fileInfo || fileInfo.size > 16 * 1024 * 1024 || !FILE_TYPES.some(ext => fileInfo!.name.toLowerCase().endsWith(ext))) return
+    const currentTime = Date.now()
+    if (!this.activeFiles[channelId!]) this.activeFiles[channelId!] = {}
+    const dateString = new Date().toISOString().slice(0, 10)
+    let recordId = join(dateString, fileInfo.name)
+    const fullPath = join(this.recordFolder, recordId)
+    if (await fs.access(fullPath).then(() => true).catch(() => false)) {
+      const { name: baseName, ext: extension } = parse(fileInfo.name)
+      recordId = join(dateString, `${baseName}_${currentTime}${extension}`)
+    }
+    try {
+      const jsonPath = join(this.recordFolder, `${recordId}.json`)
+      await fs.mkdir(parse(jsonPath).dir, { recursive: true })
+      await fs.writeFile(jsonPath, JSON.stringify({ recordId, uploaderId: userId, messages: [] as { content: string; userId: string }[] }, null, 2))
+      const buffer = await this.context.http.get<ArrayBuffer>(fileInfo.url, { responseType: 'arraybuffer' })
+      await fs.writeFile(join(this.recordFolder, recordId), Buffer.from(buffer))
+      this.activeFiles[channelId!][userId!] = { recordId, timestamp: currentTime }
+      await this.saveState()
+    } catch (error: any) {
+      this.context.logger.error(`文件下载失败: ${fileInfo.name}`, error)
+    }
   }
 
   async receiveMessage(session: Session): Promise<void> {
     const fileElement = session.elements?.find(element => element.type === 'file')
-    if (fileElement) {
-      await this.receiveFile(fileElement, session)
-    }
-
-    if (!this.validate(session, this.targetGroups)) return
+    if (fileElement) await this.receiveFile(fileElement, session)
+    if (!this.validate(session, TARGET_GROUPS)) return
     const { channelId, userId } = session
-    const { activeFiles } = this
-
-    const matchedTargets = this.findTargets(channelId!, userId!, session)
-    if (!matchedTargets.length) return
-
-    const messageContent = await this.buildContent(session, matchedTargets[0].recordId)
-    if (!messageContent) return
-
-    const finalContent = (matchedTargets.length > 1 ? CROSSTALK_TAG : '') + messageContent
     const currentTime = Date.now()
-    let dataChanged = false
-
-    for (const target of matchedTargets) {
-      await this.appendMessage(target.recordId, { content: finalContent, userId: userId! })
-      const activeData = activeFiles[channelId!]?.[target.uploaderId]
-      if (activeData && activeData.recordId === target.recordId) {
-        activeData.timestamp = currentTime
-        dataChanged = true
-      }
+    const channelData = this.activeFiles[channelId!] || {}
+    const referenceId = session.elements?.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id
+    let targets: { recordId: string; uploaderId: string }[] = []
+    if (referenceId && channelData[referenceId]) {
+      targets = [{ recordId: channelData[referenceId].recordId, uploaderId: referenceId }]
+    } else if (this.validate(session, TARGET_GROUPS, true)) {
+      targets = Object.entries(channelData).filter(([, info]) => currentTime - info.timestamp <= this.timeout * 60000).map(([uId, info]) => ({ recordId: info.recordId, uploaderId: uId }))
+    } else if (channelData[userId!] && currentTime - channelData[userId!].timestamp <= this.timeout * 5 * 60000) {
+      targets = [{ recordId: channelData[userId!].recordId, uploaderId: userId! }]
     }
-
-    if (dataChanged) await this.saveState()
-  }
-
-  private findTargets(channelId: string, userId: string, session: Session): FileTarget[] {
-    const { activeFiles, targetGroups } = this
-    const currentTime = Date.now()
-    const referenceId = session.elements?.find(element => element.type === 'at')?.attrs?.id
-      ?? (session.event as any).message?.quote?.user?.id
-      ?? null
-    const channelData = activeFiles[channelId] || {}
-
-    if (referenceId) {
-      const infoData = channelData[referenceId]
-      return infoData ? [{ recordId: infoData.recordId, uploaderId: referenceId }] : []
-    }
-
-    if (this.validate(session, targetGroups, true)) {
-      return Object.entries(channelData)
-        .filter(([, infoData]) => currentTime - infoData.timestamp <= 2 * 60 * 1000)
-        .map(([uploaderId, infoData]) => ({ recordId: infoData.recordId, uploaderId }))
-    }
-
-    const selfData = channelData[userId]
-    if (selfData && currentTime - selfData.timestamp <= 10 * 60 * 1000) {
-      return [{ recordId: selfData.recordId, uploaderId: userId }]
-    }
-    return []
-  }
-
-  private async downloadFile(fileName: string, fileSize: number, fileUrl: string, channelId: string, userId: string): Promise<void> {
-    if (fileSize > 16 * 1024 * 1024 || !FILE_TYPES.some(extension => fileName.toLowerCase().endsWith(extension))) return
-
-    const { activeFiles, fileIndex, recordFolder } = this
-    const fileKey = `${fileName}_${fileSize}`
-    const currentTime = Date.now()
-    if (!activeFiles[channelId]) activeFiles[channelId] = {}
-
-    const targetPath = join(recordFolder, `${fileIndex[fileKey]}.json`)
-    const fileExists = await fs.access(targetPath).then(() => true).catch(() => false)
-
-    if (fileIndex[fileKey] && fileExists) {
-      activeFiles[channelId][userId] = { recordId: fileIndex[fileKey], timestamp: currentTime }
-      await this.saveState()
-      return
-    }
-
-    const recordId = await this.createRecord(fileName, userId)
-    fileIndex[fileKey] = recordId
-    activeFiles[channelId][userId] = { recordId, timestamp: currentTime }
-
-    const downloadPath = join(recordFolder, recordId)
-    await fs.mkdir(parse(downloadPath).dir, { recursive: true })
-    const fetchResponse = await this.context.http.get<ArrayBuffer>(fileUrl, { responseType: 'arraybuffer' })
-    await fs.writeFile(downloadPath, Buffer.from(fetchResponse))
-
-    await this.saveState()
-  }
-
-  private async buildContent(session: Session, recordId: string): Promise<string | null> {
-    const { recordFolder } = this
+    if (!targets.length) return
     const textParts: string[] = []
-    let hasContent = false
-
-    for (const element of session.elements || []) {
-      if (element.type === 'text') {
-        const textValue = element.attrs.content?.trim()
-        if (textValue) {
-          textParts.push(textValue)
-          hasContent = true
+    let hasMeaningfulContent = false
+    for (const el of session.elements || []) {
+      if (el.type === 'text' && el.attrs.content?.trim()) {
+        textParts.push(el.attrs.content.trim())
+        hasMeaningfulContent = true
+      } else if (el.type === 'img' && el.attrs.summary !== '[动画表情]') {
+        textParts.push(`[图片: ${el.attrs.src || el.attrs.url}]`)
+        hasMeaningfulContent = true
+      }
+    }
+    if (!hasMeaningfulContent) return
+    const finalContent = (targets.length > 1 ? '[交叉对话] ' : '') + textParts.join(' ')
+    let dataChanged = false
+    for (const target of targets) {
+      const targetPath = join(this.recordFolder, `${target.recordId}.json`)
+      try {
+        const json = JSON.parse(await fs.readFile(targetPath, 'utf-8'))
+        json.messages.push({ content: finalContent, userId: userId! })
+        await fs.writeFile(targetPath, JSON.stringify(json, null, 2))
+        const activeData = this.activeFiles[channelId!]?.[target.uploaderId]
+        if (activeData?.recordId === target.recordId) {
+          activeData.timestamp = currentTime
+          dataChanged = true
         }
-      } else if (element.type === 'img') {
-        if (element.attrs.summary === '[动画表情]') continue
-        const imageName = element.attrs.file || `image_${Date.now()}.jpg`
-        if (!IMAGE_TYPES.some(extension => imageName.toLowerCase().endsWith(extension))) continue
-
-        hasContent = true
-        const uniqueName = `${parse(recordId).name}-${imageName}`
-        const imagePath = join(recordFolder, parse(recordId).dir, uniqueName)
-        await fs.mkdir(parse(imagePath).dir, { recursive: true })
-
-        const fetchResponse = await this.context.http.get<ArrayBuffer>(element.attrs.src, { responseType: 'arraybuffer' })
-        await fs.writeFile(imagePath, Buffer.from(fetchResponse))
-        textParts.push(`[图片: ${uniqueName}]`)
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') this.context.logger.error(`追加消息失败: ${target.recordId}`, error)
       }
     }
-    return hasContent ? textParts.join(' ') : null
-  }
-
-  private async createRecord(fileName: string, uploaderId: string): Promise<string> {
-    const { recordFolder } = this
-    const dateString = new Date().toISOString().slice(0, 10)
-    const { name: baseName, ext: extension } = parse(fileName)
-    let copyCount = 1
-    let recordId = join(dateString, fileName)
-
-    while (await fs.access(join(recordFolder, `${recordId}.json`)).then(() => true).catch(() => false)) {
-      recordId = join(dateString, `${baseName}(${copyCount})${extension}`)
-      copyCount++
-    }
-
-    const finalPath = join(recordFolder, `${recordId}.json`)
-    await fs.mkdir(parse(finalPath).dir, { recursive: true })
-    await fs.writeFile(finalPath, JSON.stringify({ recordId, uploaderId, messages: [] as MessageRecord[] }, null, 2))
-    return recordId
-  }
-
-  private async appendMessage(recordId: string, messageRecord: MessageRecord): Promise<void> {
-    const { recordFolder } = this
-    const targetPath = join(recordFolder, `${recordId}.json`)
-    try {
-      const fileData = await fs.readFile(targetPath, 'utf-8')
-      const jsonRecord = JSON.parse(fileData)
-      if (jsonRecord) {
-        jsonRecord.messages.push(messageRecord)
-        await fs.writeFile(targetPath, JSON.stringify(jsonRecord, null, 2))
-      }
-    } catch (error: any) {
-      if (error.code !== 'ENOENT') this.context.logger.error(`无法向记录文件添加消息:`, error)
-    }
+    if (dataChanged) await this.saveState()
   }
 }

@@ -50,6 +50,7 @@ export interface Config {
   timeRange: string
   enableOcr: boolean
   replyMode: 'none' | 'quote' | 'at'
+  recordTime: number
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -60,9 +61,10 @@ export const Config: Schema<Config> = Schema.intersect([
     timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
   }).description('功能配置'),
   Schema.object({
-    timeRange: Schema.string().description('宵禁时间').default('23-7'),
+    timeRange: Schema.string().default('23-7').description('宵禁时间'),
     enableOcr: Schema.boolean().default(false).description('图片识别'),
-    replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).description('回复方式').default('quote'),
+    replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).default('quote').description('回复方式'),
+    recordTime: Schema.number().default(2).description('记录时间'),
   }).description('参数配置'),
 ])
 
@@ -75,7 +77,7 @@ export function apply(context: Context, config: Config) {
 
   const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate, config.replyMode, config.enableOcr) : null
   const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
-  const record = config.recordFile ? new FileRecord(context, validate) : null
+  const record = config.recordFile ? new FileRecord(context, validate, config.recordTime) : null
   const vote = config.voteBan ? new VoteRule(context, validate) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
