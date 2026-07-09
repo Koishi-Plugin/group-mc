@@ -51,17 +51,17 @@ export class AutoMute {
     const masterTimer = setInterval(() => {
       const h = new Date().getHours()
       const isMuteTime = start > end ? (h >= start || h < end) : (h >= start && h < end)
-      if (isMuteTime) {
-        startPolling()
-      } else {
-        stopPolling()
-      }
+      if (isMuteTime) startPolling()
+      else stopPolling()
     }, 60000)
 
     const initH = new Date().getHours()
     if (start > end ? (initH >= start || initH < end) : (initH >= start && initH < end)) startPolling()
 
-    this.recordActivity = async (session) => { if (targetGroups.includes(session.guildId!) && adminList.includes(session.userId!)) recentActivity.set(session.guildId!, Date.now()) }
+    this.recordActivity = async (session) => {
+      if (targetGroups.includes(session.guildId!) && adminList.includes(session.userId!)) recentActivity.set(session.guildId!, Date.now())
+    }
+
     this.clearResource = () => {
       clearInterval(masterTimer)
       if (pollingTimer) clearInterval(pollingTimer)

@@ -18,8 +18,10 @@ export const usage = `
   <p>🐛 遇到问题？请通过 <strong>Issues</strong> 提交反馈，或加入 QQ 群 <a href="https://qm.qq.com/q/PdLMx9Jowq" style="color:#e0574a;text-decoration:none;"><strong>855571375</strong></a> 进行交流</p>
 </div>
 `
-const USER_GROUPS = '633640264, 203232161, 201034984, 533529045, 744304553, 282845310, 482624681, 991620626, 657677715, 775084843, 1028074835, 1070029541'
-const ERROR_GROUPS = '666546887, 978054335, 958853931'
+
+const USER_LIST = ['633640264', '203232161', '201034984', '533529045', '744304553', '282845310', '482624681', '991620626', '657677715', '775084843', '1028074835', '1070029541']
+const ERROR_LIST = ['666546887', '978054335', '958853931']
+const MGMT_LIST = ['978519342']
 const ADMIN_LIST = [
   '3574467868', // 面包
   '603484945',  // 辞庐
@@ -59,8 +61,8 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     recordFile: Schema.boolean().default(false).description('报告记录'),
     voteBan: Schema.boolean().default(false).description('投票群管'),
-    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_GROUPS),
-    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_GROUPS),
+    keywordRule: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('正则操作').default(USER_LIST.join(',')),
+    timeMute: Schema.union([Schema.const(false).description('禁用'), Schema.string().description('启用')]).description('自动宵禁').default(ERROR_LIST.join(',')),
   }).description('功能配置'),
   Schema.object({
     timeRange: Schema.string().default('23-7').description('宵禁时间'),
@@ -73,32 +75,34 @@ export const Config: Schema<Config> = Schema.intersect([
 ])
 
 export function apply(context: Context, config: Config) {
-  const extraGroup = config.extraGroup ? [config.extraGroup] : []
-  const parse = (str: string) => str.split(/[,，]/).map(v => v.trim()).filter(Boolean)
-  const validate = (session: Session, allowedGroups: string[], requireAdmin = false): boolean => {
-    if (!session.guildId || !session.userId || !allowedGroups.includes(session.guildId)) return false
+  const parse = (str: string | false, fallback: string[]) => typeof str === 'string' ? str.split(/[,，]/).map(v => v.trim()).filter(Boolean) : fallback
+  const validate = (session: Session, allowed: string[], requireAdmin = false): boolean => {
+    if (!session.guildId || !session.userId || !allowed.includes(session.guildId)) return false
     return !(requireAdmin && !ADMIN_LIST.includes(session.userId))
   }
 
-  const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, [...parse(config.keywordRule), ...extraGroup], validate, config.replyMode, config.enableOcr) : null
-  const mute = typeof config.timeMute === 'string' ? new AutoMute(context, [...parse(config.timeMute), ...extraGroup], ADMIN_LIST, config.timeRange) : null
-  const record = config.recordFile ? new FileRecord(context, [...parse(ERROR_GROUPS), ...extraGroup], validate, config.recordTime) : null
-  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio, [...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342', ...extraGroup]) : null
+  const extraGroups = config.extraGroup ? [config.extraGroup] : []
+  const keywordTarget = [...parse(config.keywordRule, USER_LIST), ...extraGroups]
+  const errorTarget = [...parse(config.timeMute, ERROR_LIST), ...extraGroups]
+  const mgmtTarget = [...MGMT_LIST, ...extraGroups]
+  const allTarget = Array.from(new Set([...keywordTarget, ...errorTarget, ...mgmtTarget]))
+
+  const keyword = config.keywordRule !== false ? new Keyword(context, keywordTarget, validate, config.replyMode, config.enableOcr) : null
+  const mute = config.timeMute !== false ? new AutoMute(context, errorTarget, ADMIN_LIST, config.timeRange) : null
+  const record = config.recordFile ? new FileRecord(context, errorTarget, validate, config.recordTime) : null
+  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio, allTarget, mgmtTarget) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
   keyword?.registerCommands(root)
   vote?.registerCommands(root)
 
-  if (config.timeMute || config.recordFile || config.keywordRule || config.voteBan) {
-    context.on('message', async (session: Session) => {
-      const groups = Array.from(new Set([...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342', ...extraGroup]))
-      if (!session.guildId || !groups.includes(session.guildId)) return
-      await vote?.receiveMessage(session)
-      await mute?.recordActivity(session)
-      await record?.receiveMessage(session)
-      await keyword?.receiveMessage(session)
-    })
-  }
+  context.on('message', async (session: Session) => {
+    if (!session.guildId || !allTarget.includes(session.guildId)) return
+    await vote?.receiveMessage(session)
+    await mute?.recordActivity(session)
+    await record?.receiveMessage(session)
+    await keyword?.receiveMessage(session)
+  })
 
   context.on('dispose', () => {
     vote?.clearResource()

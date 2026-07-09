@@ -33,6 +33,7 @@ export class FileRecord {
     if (!this.validate(session, this.targetGroups)) return
     const { channelId, userId, messageId } = session
     let fileInfo: { name: string; size: number; url: string } | null = null
+
     const sourceMessage = await session.bot.internal.getMsg(messageId).catch(() => null)
     const messageData = sourceMessage && Array.isArray(sourceMessage.message) ? sourceMessage.message.find((node: any) => node.type === 'file')?.data : null
     if (messageData?.file && messageData.file_size && messageData.url) {
@@ -42,6 +43,7 @@ export class FileRecord {
       if (file && attrSize && src) fileInfo = { name: file, size: parseInt(attrSize, 10), url: src }
     }
     if (!fileInfo || fileInfo.size > 16 * 1024 * 1024 || !FILE_TYPES.some(ext => fileInfo!.name.toLowerCase().endsWith(ext))) return
+
     const currentTime = Date.now()
     if (!this.activeFiles[channelId!]) this.activeFiles[channelId!] = {}
     const dateString = new Date().toISOString().slice(0, 10)
@@ -51,10 +53,11 @@ export class FileRecord {
       const { name: baseName, ext: extension } = parse(fileInfo.name)
       recordId = join(dateString, `${baseName}_${currentTime}${extension}`)
     }
+
     try {
       const jsonPath = join(this.recordFolder, `${recordId}.json`)
       await fs.mkdir(parse(jsonPath).dir, { recursive: true })
-      await fs.writeFile(jsonPath, JSON.stringify({ recordId, uploaderId: userId, messages: [] as { content: string; userId: string }[] }, null, 2))
+      await fs.writeFile(jsonPath, JSON.stringify({ recordId, uploaderId: userId, messages: [] as any[] }, null, 2))
       const buffer = await this.context.http.get<ArrayBuffer>(fileInfo.url, { responseType: 'arraybuffer' })
       await fs.writeFile(join(this.recordFolder, recordId), Buffer.from(buffer))
       this.activeFiles[channelId!][userId!] = [recordId, currentTime]
@@ -72,6 +75,7 @@ export class FileRecord {
     const currentTime = Date.now()
     const channelData = this.activeFiles[channelId!] || {}
     const referenceId = session.elements?.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id
+
     let targets: { recordId: string; uploaderId: string }[] = []
     if (referenceId && channelData[referenceId]) {
       targets = [{ recordId: channelData[referenceId][0], uploaderId: referenceId }]
@@ -82,19 +86,21 @@ export class FileRecord {
     } else if (channelData[userId!] && currentTime - channelData[userId!][1] <= this.timeout * 5 * 60000) {
       targets = [{ recordId: channelData[userId!][0], uploaderId: userId! }]
     }
+
     if (!targets.length) return
     const textParts: string[] = []
-    let hasMeaningfulContent = false
+    let hasContent = false
     for (const el of session.elements || []) {
       if (el.type === 'text' && el.attrs.content?.trim()) {
         textParts.push(el.attrs.content.trim())
-        hasMeaningfulContent = true
+        hasContent = true
       } else if (el.type === 'img' && el.attrs.summary !== '[动画表情]') {
         textParts.push(`[图片: ${el.attrs.src || el.attrs.url}]`)
-        hasMeaningfulContent = true
+        hasContent = true
       }
     }
-    if (!hasMeaningfulContent) return
+    if (!hasContent) return
+
     const finalContent = (targets.length > 1 ? '[交叉对话] ' : '') + textParts.join(' ')
     for (const target of targets) {
       const targetPath = join(this.recordFolder, `${target.recordId}.json`)
