@@ -9,6 +9,7 @@ export class FileRecord {
   private recordFolder: string
   private statePath: string
   private activeFiles: Record<string, Record<string, [string, number]>> = {}
+  private queues: Map<string, Promise<void>> = new Map()
 
   constructor(private context: Context, private validate: (session: Session, groups: string[], admin?: boolean) => boolean, private timeout: number) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
@@ -96,22 +97,27 @@ export class FileRecord {
     }
     if (!hasMeaningfulContent) return
     const finalContent = (targets.length > 1 ? '[交叉对话] ' : '') + textParts.join(' ')
-    let dataChanged = false
     for (const target of targets) {
       const targetPath = join(this.recordFolder, `${target.recordId}.json`)
-      try {
-        const json = JSON.parse(await fs.readFile(targetPath, 'utf-8'))
-        json.messages.push({ content: finalContent, userId: userId! })
-        await fs.writeFile(targetPath, JSON.stringify(json, null, 2))
-        const activeData = this.activeFiles[channelId!]?.[target.uploaderId]
-        if (activeData && activeData[0] === target.recordId) {
-          activeData[1] = currentTime
-          dataChanged = true
+      const previous = this.queues.get(target.recordId) || Promise.resolve()
+      const current = (async () => {
+        try {
+          await previous
+          const data = await fs.readFile(targetPath, 'utf-8')
+          const json = JSON.parse(data)
+          json.messages.push({ content: finalContent, userId: userId! })
+          await fs.writeFile(targetPath, JSON.stringify(json, null, 2))
+          const activeData = this.activeFiles[channelId!]?.[target.uploaderId]
+          if (activeData && activeData[0] === target.recordId) {
+            activeData[1] = currentTime
+            await this.saveState()
+          }
+        } catch (error: any) {
+          if (error.code !== 'ENOENT') this.context.logger.error(`追加消息失败: ${target.recordId}`, error)
         }
-      } catch (error: any) {
-        if (error.code !== 'ENOENT') this.context.logger.error(`追加消息失败: ${target.recordId}`, error)
-      }
+      })().finally(() => { if (this.queues.get(target.recordId) === current) this.queues.delete(target.recordId) })
+      this.queues.set(target.recordId, current)
+      await current
     }
-    if (dataChanged) await this.saveState()
   }
 }

@@ -78,19 +78,21 @@ export function apply(context: Context, config: Config) {
   const keyword = typeof config.keywordRule === 'string' ? new Keyword(context, parse(config.keywordRule), validate, config.replyMode, config.enableOcr) : null
   const mute = typeof config.timeMute === 'string' ? new AutoMute(context, parse(config.timeMute), ADMIN_LIST, config.timeRange) : null
   const record = config.recordFile ? new FileRecord(context, validate, config.recordTime) : null
-  const vote = config.voteBan ? new VoteRule(context, validate) : null
+  const vote = config.voteBan ? new VoteRule(validate) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
   keyword?.registerCommands(root)
   vote?.registerCommands(root)
 
-  context.on('message', async (session) => {
-    if (!session.guildId || !Array.from(new Set([...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342'])).includes(session.guildId)) return
-    await vote?.checkMessage(session)
-    await mute?.recordActivity(session)
-    await record?.receiveMessage(session)
-    await keyword?.receiveMessage(session)
-  })
+  if (config.timeMute || config.recordFile || config.keywordRule || config.voteBan) {
+    context.on('message', async (session: Session) => {
+      if (!session.guildId || !Array.from(new Set([...parse(USER_GROUPS), ...parse(ERROR_GROUPS), '978519342'])).includes(session.guildId)) return
+      await vote?.receiveMessage(session)
+      await mute?.recordActivity(session)
+      await record?.receiveMessage(session)
+      await keyword?.receiveMessage(session)
+    })
+  }
 
   context.on('dispose', () => {
     vote?.clearResource()
