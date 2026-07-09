@@ -8,7 +8,7 @@ const TARGET_GROUPS = ['666546887', '978054335', '958853931']
 export class FileRecord {
   private recordFolder: string
   private statePath: string
-  private activeFiles: Record<string, Record<string, { recordId: string; timestamp: number }>> = {}
+  private activeFiles: Record<string, Record<string, [string, number]>> = {}
 
   constructor(private context: Context, private validate: (session: Session, groups: string[], admin?: boolean) => boolean, private timeout: number) {
     const folderPath = join(context.baseDir, 'data', 'group-mc')
@@ -16,16 +16,14 @@ export class FileRecord {
     this.statePath = join(folderPath, 'logs.json')
 
     fs.readFile(this.statePath, 'utf-8')
-      .then((data) => {
-        const state = JSON.parse(data)
-        this.activeFiles = state.activeFiles || {}
-      }).catch((error: any) => { if (error.code !== 'ENOENT') this.context.logger.error('初始化失败:', error) })
+      .then((data) => { this.activeFiles = JSON.parse(data) || {} })
+      .catch((error: any) => { if (error.code !== 'ENOENT') this.context.logger.error('初始化失败:', error) })
   }
 
   private async saveState(): Promise<void> {
     try {
       await fs.mkdir(parse(this.statePath).dir, { recursive: true })
-      await fs.writeFile(this.statePath, JSON.stringify({ activeFiles: this.activeFiles }, null, 2))
+      await fs.writeFile(this.statePath, JSON.stringify(this.activeFiles, null, 2))
     } catch (error: any) {
       this.context.logger.error('保存记录失败:', error)
     }
@@ -59,7 +57,7 @@ export class FileRecord {
       await fs.writeFile(jsonPath, JSON.stringify({ recordId, uploaderId: userId, messages: [] as { content: string; userId: string }[] }, null, 2))
       const buffer = await this.context.http.get<ArrayBuffer>(fileInfo.url, { responseType: 'arraybuffer' })
       await fs.writeFile(join(this.recordFolder, recordId), Buffer.from(buffer))
-      this.activeFiles[channelId!][userId!] = { recordId, timestamp: currentTime }
+      this.activeFiles[channelId!][userId!] = [recordId, currentTime]
       await this.saveState()
     } catch (error: any) {
       this.context.logger.error(`文件下载失败: ${fileInfo.name}`, error)
@@ -76,11 +74,13 @@ export class FileRecord {
     const referenceId = session.elements?.find(el => el.type === 'at')?.attrs?.id ?? (session.event as any).message?.quote?.user?.id
     let targets: { recordId: string; uploaderId: string }[] = []
     if (referenceId && channelData[referenceId]) {
-      targets = [{ recordId: channelData[referenceId].recordId, uploaderId: referenceId }]
+      targets = [{ recordId: channelData[referenceId][0], uploaderId: referenceId }]
     } else if (this.validate(session, TARGET_GROUPS, true)) {
-      targets = Object.entries(channelData).filter(([, info]) => currentTime - info.timestamp <= this.timeout * 60000).map(([uId, info]) => ({ recordId: info.recordId, uploaderId: uId }))
-    } else if (channelData[userId!] && currentTime - channelData[userId!].timestamp <= this.timeout * 5 * 60000) {
-      targets = [{ recordId: channelData[userId!].recordId, uploaderId: userId! }]
+      targets = Object.entries(channelData)
+        .filter(([, info]) => currentTime - info[1] <= this.timeout * 60000)
+        .map(([uId, info]) => ({ recordId: info[0], uploaderId: uId }))
+    } else if (channelData[userId!] && currentTime - channelData[userId!][1] <= this.timeout * 5 * 60000) {
+      targets = [{ recordId: channelData[userId!][0], uploaderId: userId! }]
     }
     if (!targets.length) return
     const textParts: string[] = []
@@ -104,8 +104,8 @@ export class FileRecord {
         json.messages.push({ content: finalContent, userId: userId! })
         await fs.writeFile(targetPath, JSON.stringify(json, null, 2))
         const activeData = this.activeFiles[channelId!]?.[target.uploaderId]
-        if (activeData?.recordId === target.recordId) {
-          activeData.timestamp = currentTime
+        if (activeData && activeData[0] === target.recordId) {
+          activeData[1] = currentTime
           dataChanged = true
         }
       } catch (error: any) {

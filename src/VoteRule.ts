@@ -2,6 +2,7 @@ import { Context, h, Session } from 'koishi'
 
 interface VotePoll {
   session: Session
+  targetGuildId: string
   targetId: string
   targetName: string
   messageId: string
@@ -15,90 +16,97 @@ export class VoteRule {
   private voteMap = new Map<string, VotePoll>()
   private voteThreshold: string = '3:1'
   private voteTimeout: number = 0
-  private targetGroups = ['978519342']
+  private controlGroup = '978519342'
+  private groupMapping: Record<number, string> = {
+    1: '633640264',
+    2: '203232161',
+    3: '201034984',
+    4: '533529045',
+    5: '744304553',
+    6: '282845310',
+    7: '482624681',
+    8: '991620626',
+    9: '657677715',
+    10: '775084843'
+  }
 
   constructor(
     private context: Context,
     private validate: (session: Session, groups: string[], admin?: boolean) => boolean
   ) {}
 
-  registerCommands(rootCommand: any): void {
-    rootCommand.subcommand('vote', '投票踢人或禁言')
-      .option('time', '-t <time:number>', { fallback: 60 })
-      .option('ban', '-b', { fallback: false })
-      .action(({ session, options }: { session: Session; options: { time?: number; ban?: boolean } }) => {
-        if (!this.validate(session, this.targetGroups, true)) return
-        return this.startVote(session, options)
+  registerCommands(root: any): void {
+    root.subcommand('vote <id:number> <targetId:string> [time:number]', '投票踢人或禁言')
+      .action(async ({ session }: { session: Session }, id: number, targetId: string, time?: number) => {
+        if (session.guildId !== this.controlGroup) return
+        if (!this.validate(session, [this.controlGroup], true)) return
+        const targetGuildId = this.groupMapping[id]
+        if (!targetGuildId) return '参数错误。ID 必须是 1-10 之间的数字。'
+        if (!targetId) return '参数错误。格式：vote <ID> <用户ID> [时间]'
+
+        return this.startVote(session, targetGuildId, targetId, time)
       })
   }
 
   private finishVote(pollKey: string, pollData: VotePoll, resultType: 'approve' | 'reject' | 'timeout', replySession?: Session, prefixString = '') {
-    const { voteMap, targetGroups } = this
+    const { voteMap } = this
     if (pollData.pollTimer) clearTimeout(pollData.pollTimer)
     voteMap.delete(pollKey)
 
-    const { session, targetId, targetName, duration } = pollData
-    const guildId = session.guildId
-    if (!session.bot || !guildId) return
+    const { session, targetGuildId, targetId, targetName, duration } = pollData
+    if (!session.bot) return
 
-    const targetChannel = targetGroups[0]
     const sendMessage = (messageText: string) =>
       replySession
         ? replySession.send(prefixString + (prefixString ? '\n' : '') + messageText).catch(() => {})
-        : session.bot.sendMessage(targetChannel, messageText).catch(() => {})
+        : session.bot.sendMessage(this.controlGroup, messageText).catch(() => {})
 
     if (resultType === 'timeout') return sendMessage(`投票超时，未对 ${targetName} 执行操作`)
     if (resultType === 'reject') return sendMessage(`投票否决，未对 ${targetName} 执行操作`)
 
     const actionTask = duration > 0
-      ? session.bot.muteGuildMember(guildId, targetId, duration * 60000)
-      : session.bot.kickGuildMember(guildId, targetId)
+      ? session.bot.muteGuildMember(targetGuildId, targetId, duration * 60000)
+      : session.bot.kickGuildMember(targetGuildId, targetId)
 
     actionTask
-      .then(() => sendMessage(`投票通过，已${duration > 0 ? `禁言${duration}分钟` : '踢出'} ${targetName}`))
-      .catch(() => {})
+      .then(() => sendMessage(`投票通过，已在群 ${targetGuildId} 中${duration > 0 ? `禁言${duration}分钟` : '踢出'} ${targetName}`))
+      .catch((e) => sendMessage(`投票通过，但执行操作失败：${e.message || '未知错误'}`))
   }
 
-  public async startVote(session: Session, options: { time?: number; ban?: boolean }): Promise<void> {
-    const { voteMap, voteTimeout, voteThreshold, targetGroups } = this
-    const { userId, guildId, selfId, quote } = session
-    if (!guildId || !userId || !quote?.user?.id) return
+  public async startVote(session: Session, targetGuildId: string, targetId: string, time?: number): Promise<void | string> {
+    const { voteMap, voteTimeout, voteThreshold } = this
+    const { selfId } = session
 
-    const targetChannel = targetGroups[0]
-    if (targetChannel) {
-      try {
-        await session.bot.getGuildMember(targetChannel, userId)
-      } catch {
-        return
-      }
-    }
+    if (targetId === selfId) return '不能对机器人发起投票'
+    const pollKey = `${targetGuildId}-${targetId}`
+    if (voteMap.has(pollKey)) return '该用户的投票正在进行中'
 
-    const targetId = quote.user.id
-    if (targetId === selfId) return
-    const pollKey = `${guildId}-${targetId}`
-    if (voteMap.has(pollKey)) return
-
-    const finalDuration = options.ban ? 0 : (options.time && options.time > 0 ? options.time : 60)
-    const targetUser = await session.bot.getGuildMember(guildId, targetId).catch(() => ({} as any))
-    const targetName = targetUser?.nick || quote.user.name || targetId
-    const targetGuild = await session.bot.getGuild(guildId).catch(() => ({} as any))
-    const guildName = targetGuild?.name || guildId
+    const finalDuration = time && time > 0 ? time : (time === 0 ? 0 : 60)
+    const targetUser = await session.bot.getGuildMember(targetGuildId, targetId).catch(() => ({} as any))
+    const targetName = targetUser?.nick || targetUser?.username || targetId
+    const targetGuild = await session.bot.getGuild(targetGuildId).catch(() => ({} as any))
+    const guildName = targetGuild?.name || targetGuildId
 
     const limitParts = voteThreshold.split(':').map(Number)
     const approveLimit = limitParts[0]
     const rejectLimit = limitParts[1]
 
-    const alertMessage = `${guildName} (${guildId})\n${targetName} (${targetId})\n${voteTimeout > 0 ? `${voteTimeout}分钟` : '无限时'}→${finalDuration > 0 ? `禁言${finalDuration}分钟` : '踢出'}\n引用回复: y/同意(${approveLimit}) | n/拒绝(${rejectLimit})`
+    const alertMessage = `发起投票：\n目标群：${guildName} (${targetGuildId})\n目标用户：${targetName} (${targetId})\n操作：${finalDuration > 0 ? `禁言${finalDuration}分钟` : '踢出'}\n有效期：${voteTimeout > 0 ? `${voteTimeout}分钟` : '无限制'}\n回复此消息投票: y/同意(${approveLimit}) | n/拒绝(${rejectLimit})`
 
-    const pollData: VotePoll = { session, targetId, targetName, messageId: '', duration: finalDuration, approveSet: new Set(), rejectSet: new Set() }
-
-    if (targetChannel && targetChannel !== guildId) {
-      await session.bot.internal.sendGroupForwardMsg(Number(targetChannel), [{ type: 'node', data: { name: targetName, uin: targetId, content: quote.content } }]).catch(() => {})
+    const pollData: VotePoll = {
+      session,
+      targetGuildId,
+      targetId,
+      targetName,
+      messageId: '',
+      duration: finalDuration,
+      approveSet: new Set(),
+      rejectSet: new Set()
     }
 
-    const sendResult = await session.bot.sendMessage(targetChannel, alertMessage).catch(() => {})
+    const sendResult = await session.bot.sendMessage(this.controlGroup, alertMessage).catch(() => {})
     const messageId = (Array.isArray(sendResult) ? sendResult[0] : sendResult) || ''
-    if (!messageId) return
+    if (!messageId) return '发送投票消息失败'
 
     pollData.messageId = messageId
 
@@ -116,12 +124,9 @@ export class VoteRule {
   }
 
   public async checkMessage(session: Session): Promise<void> {
-    if (!this.validate(session, this.targetGroups, true)) return
-
-    const { voteMap, voteThreshold, targetGroups } = this
+    const { voteMap, voteThreshold } = this
     const { userId, quote, guildId, content } = session
-    const targetChannel = targetGroups[0]
-    if (!userId || !quote?.id || !guildId || guildId !== targetChannel) return
+    if (!userId || !quote?.id || !guildId || guildId !== this.controlGroup) return
 
     const activePoll = [...voteMap.entries()].find(([, data]) => data.messageId === quote.id)
     if (!activePoll) return
@@ -147,7 +152,7 @@ export class VoteRule {
     const approveLimit = limitParts[0]
     const rejectLimit = limitParts[1]
 
-    session.send(h.quote(quote.id) + `支持：${pollData.approveSet.size}/${approveLimit} | 反反对：${pollData.rejectSet.size}/${rejectLimit}`)
+    session.send(h.quote(quote.id) + `支持：${pollData.approveSet.size}/${approveLimit} | 反对：${pollData.rejectSet.size}/${rejectLimit}`)
       .then(messageIds => {
         this.context.setTimeout(() => {
           messageIds.forEach(msgId => {
