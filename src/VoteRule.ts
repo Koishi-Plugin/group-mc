@@ -8,7 +8,7 @@ const GROUP_ID_MAP: Record<number, string> = {
 
 export class VoteRule {
   private activeVotes = new Map<string, { guildId: string, guildName: string, targetId: string, targetName: string,
-    messageId: string, duration: number, approvers: Set<string>, rejecters: Set<string>, timer: NodeJS.Timeout }>()
+    messageId: string, duration: number, approvers: Map<string, string>, rejecters: Map<string, string>, timer: NodeJS.Timeout }>()
   constructor(private checkPermission: (session: Session, groups: string[], requireAdmin?: boolean) => boolean, private ratio: string, private allowedListen: string[], private mgmtGroups: string[]) {}
 
   registerCommands(root: any) {
@@ -21,13 +21,13 @@ export class VoteRule {
 
         const duration = options.kick ? 0 : options.time
         const [memberInfo, guildInfo] = await Promise.all([session.bot.getGuildMember(guildId, targetId).catch(() => ({})), session.bot.getGuild(guildId).catch(() => ({}))]) as any[]
-        const targetName = memberInfo.nick || memberInfo.username || targetId
+        const targetName = memberInfo.name || memberInfo.user?.name || targetId
         const [appReq, rejReq] = this.ratio.split(':').map(Number)
-        const sentMessage = await session.bot.sendMessage(session.guildId, `用户: ${targetName}(${targetId})\n群组: ${guildInfo.name}(${guildId})\n操作: ${duration > 0 ? `禁言 ${duration} 分钟` : '踢出群聊'}（${appReq}赞成/${rejReq}否决）\n请对本消息回复"y/n"进行投票`)
+        const sentMessage = await session.bot.sendMessage(session.guildId, `用户: ${targetName}(${targetId})\n群组: ${guildInfo.name}(${guildId})\n操作: ${duration > 0 ? `禁言 ${duration} 分钟` : '踢出群聊'}（${appReq}支持/${rejReq}反对）\n请对本消息回复"y/n"进行投票`)
         if (!sentMessage || (Array.isArray(sentMessage) && !sentMessage.length)) return
         const voteKey = `${guildId}-${targetId}`
         const timer = setTimeout(() => { if (this.activeVotes.has(voteKey)) { this.activeVotes.delete(voteKey); session.bot.sendMessage(session.guildId!, `已取消对 ${targetName} 的投票`) } }, 21600000)
-        this.activeVotes.set(voteKey, { guildId, guildName: guildInfo.name, targetId, targetName, messageId: String(Array.isArray(sentMessage) ? sentMessage[0] : sentMessage), duration, approvers: new Set(), rejecters: new Set(), timer })
+        this.activeVotes.set(voteKey, { guildId, guildName: guildInfo.name, targetId, targetName, messageId: String(Array.isArray(sentMessage) ? sentMessage[0] : sentMessage), duration, approvers: new Map(), rejecters: new Map(), timer })
       })
     root.subcommand('revoke', '撤回消息')
       .usage('回复指定消息来撤回对应内容。')
@@ -49,10 +49,10 @@ export class VoteRule {
     const currentUserId = session.userId!
     if (voteInput === 'y') {
       voteData.rejecters.delete(currentUserId)
-      voteData.approvers.add(currentUserId)
+      voteData.approvers.set(currentUserId, session.author?.nick || session.author?.name || currentUserId)
     } else {
       voteData.approvers.delete(currentUserId)
-      voteData.rejecters.add(currentUserId)
+      voteData.rejecters.set(currentUserId, session.author?.nick || session.author?.name || currentUserId)
     }
 
     const [appReq, rejReq] = this.ratio.split(':').map(Number)
@@ -65,6 +65,8 @@ export class VoteRule {
       executionTask.then(() => {
         session.bot.sendMessage(session.guildId!, `已对 ${voteData.guildName} 的 ${voteData.targetName} 执行：${voteData.duration > 0 ? `禁言 ${voteData.duration} 分钟` : '踢出群聊'}`)
       }).catch(error => { session.bot.sendMessage(session.guildId!, `对 ${voteData.guildName} 的 ${voteData.targetName} 执行失败: ${error.message}`) })
+    } else {
+      session.bot.sendMessage(session.guildId, voteInput === 'y'  ? `已投支持票，当前：${Array.from(voteData.approvers.values()).join(', ')}`  : `已投反对票，当前：${Array.from(voteData.rejecters.values()).join(', ')}`)
     }
   }
 

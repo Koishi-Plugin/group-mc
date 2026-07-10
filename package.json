@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-group-mc",
   "description": "指定 MC 群组专用工具",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "contributors": [
     "Yis_Rime <yis_rime@outlook.com>"
   ],
