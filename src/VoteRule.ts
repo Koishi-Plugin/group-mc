@@ -7,8 +7,9 @@ const GROUP_ID_MAP: Record<number, string> = {
 }
 
 export class VoteRule {
+  private revokeUsers = new Set<string>()
   private activeVotes = new Map<string, { guildId: string, guildName: string, targetId: string, targetName: string,
-    messageId: string, duration: number, approvers: Map<string, string>, rejecters: Map<string, string>, timer: NodeJS.Timeout }>()
+    messageId: string, duration: number, approvers: Map<string, string>, rejecters: Map<string, string>, timer: NodeJS.Timeout, isRevoke: boolean }>()
   constructor(private checkPermission: (session: Session, groups: string[], requireAdmin?: boolean) => boolean, private ratio: string, private allowedListen: string[], private mgmtGroups: string[]) {}
 
   private async sendAndRecall(session: Session, content: string) {
@@ -20,25 +21,31 @@ export class VoteRule {
   registerCommands(root: any) {
     root.subcommand('vote <id:number> <targetId:string>', '发起投票')
       .option('time', '-t <time:number>', { fallback: 60 })
-      .option('kick', '-k')
+      .option('kick', '-k', '踢出群聊')
+      .option('revoke', '-r', '仅撤回')
       .action(async ({ session, options }: { session: Session, options: any }, id: number, targetId: string) => {
         const guildId = GROUP_ID_MAP[id]
         if (!session.guildId || !this.mgmtGroups.includes(session.guildId) || targetId === session.selfId || this.activeVotes.has(`${guildId}-${targetId}`)) return
 
-        const duration = options.kick ? 0 : options.time
+        const { kick, revoke: isRevoke, time: duration } = options
         const [memberInfo, guildInfo] = await Promise.all([session.bot.getGuildMember(guildId, targetId).catch(() => ({})), session.bot.getGuild(guildId).catch(() => ({}))]) as any[]
         const targetName = memberInfo.name || memberInfo.user?.name || targetId
         const [appReq, rejReq] = this.ratio.split(':').map(Number)
-        const sentMessage = await session.bot.sendMessage(session.guildId, `用户: ${targetName}(${targetId})\n群组: ${guildInfo.name}(${guildId})\n操作: ${duration > 0 ? `禁言${duration}分钟` : '踢出群聊'} | 票数：${appReq}:${rejReq}\n\n请使用"y/n"回复本消息以投票`)
+        const actionDesc = isRevoke ? '撤回权限' : (kick ? '踢出群聊' : `禁言${duration}分钟`)
+        const sentMessage = await session.bot.sendMessage(session.guildId, `用户: ${targetName}(${targetId})\n群组: ${guildInfo.name}(${guildId})\n操作: ${actionDesc} | 票数：${appReq}:${rejReq}\n\n请使用"y/n"回复本消息以投票`)
         if (!sentMessage || (Array.isArray(sentMessage) && !sentMessage.length)) return
         const voteKey = `${guildId}-${targetId}`
-        const timer = setTimeout(() => { if (this.activeVotes.has(voteKey)) { this.activeVotes.delete(voteKey); this.sendAndRecall(session, `已取消对 ${targetName} 的投票`) } }, 21600000)
-        this.activeVotes.set(voteKey, { guildId, guildName: guildInfo.name, targetId, targetName, messageId: String(Array.isArray(sentMessage) ? sentMessage[0] : sentMessage), duration, approvers: new Map(), rejecters: new Map(), timer })
+        const timer = setTimeout(() => { if (this.activeVotes.delete(voteKey)) this.sendAndRecall(session, `已取消对 ${targetName} 的投票`) }, 21600000)
+        this.activeVotes.set(voteKey, { guildId, guildName: guildInfo.name, targetId, targetName,
+          messageId: String(Array.isArray(sentMessage) ? sentMessage[0] : sentMessage), timer,
+          duration: kick ? 0 : duration, approvers: new Map(), rejecters: new Map(), isRevoke: !!isRevoke
+        })
       })
     root.subcommand('revoke', '撤回消息')
       .usage('回复指定消息来撤回对应内容。')
       .action(async ({ session }: { session: Session }) => {
-        if (!session.quote?.id) { this.sendAndRecall(session, '请回复需要撤回的消息'); return }
+        if (!session.quote?.id || !session.quote?.user?.id) return this.sendAndRecall(session, '请回复需要撤回的消息')
+        if (!this.revokeUsers.has(`${session.userId}-${session.guildId}-${session.quote?.user?.id}`)) return
         if (!this.checkPermission(session, this.allowedListen, true)) return
         try { await (session as any).onebot.deleteMsg(session.quote.id) } catch (error) {}
       })
@@ -46,18 +53,17 @@ export class VoteRule {
 
   async receiveMessage(session: Session) {
     const content = (session.content || '').toLowerCase()
-    if (!session.guildId || !this.mgmtGroups.includes(session.guildId) || (!content.includes('y') && !content.includes('n')) || !session.quote?.id) return
-
+    const isApprove = content.includes('y'), isReject = content.includes('n')
+    if (!session.guildId || !this.mgmtGroups.includes(session.guildId) || (!isApprove && !isReject) || !session.quote?.id) return
     const voteEntry = [...this.activeVotes.entries()].find(([_, data]) => data.messageId === String(session.quote?.id))
     if (!voteEntry) return
     const [voteKey, voteData] = voteEntry
-    const currentUserId = session.userId!
-    if (content.includes('y')) {
-      voteData.rejecters.delete(currentUserId)
-      voteData.approvers.set(currentUserId, session.author?.nick || session.author?.name || currentUserId)
+    if (isApprove) {
+      voteData.rejecters.delete(session.userId!)
+      voteData.approvers.set(session.userId!, session.author?.nick || session.author?.name || session.userId!)
     } else {
-      voteData.approvers.delete(currentUserId)
-      voteData.rejecters.set(currentUserId, session.author?.nick || session.author?.name || currentUserId)
+      voteData.approvers.delete(session.userId!)
+      voteData.rejecters.set(session.userId!, session.author?.nick || session.author?.name || session.userId!)
     }
 
     const [appReq, rejReq] = this.ratio.split(':').map(Number)
@@ -66,17 +72,25 @@ export class VoteRule {
       clearTimeout(voteData.timer)
       this.activeVotes.delete(voteKey)
       if (!isApproved) return this.sendAndRecall(session, `已放弃对 ${voteData.targetName} 的操作`)
-      const executionTask = voteData.duration > 0 ? session.bot.muteGuildMember(voteData.guildId, voteData.targetId, voteData.duration * 60000) : session.bot.kickGuildMember(voteData.guildId, voteData.targetId)
-      executionTask.then(() => {
-        session.bot.sendMessage(session.guildId!, `已对 ${voteData.targetName} 执行：${voteData.duration > 0 ? `禁言${voteData.duration}分钟` : '踢出群聊'}`)
-      }).catch(error => { this.sendAndRecall(session, `对 ${voteData.targetName} 的操作失败: ${error.message}`) })
+      voteData.approvers.forEach((_, voterId) => {
+        const permKey = `${voterId}-${voteData.guildId}-${voteData.targetId}`
+        this.revokeUsers.add(permKey)
+        setTimeout(() => this.revokeUsers.delete(permKey), 300000)
+      })
+      session.bot.sendMessage(session.guildId!, `已对 ${voteData.targetName} 执行：${voteData.isRevoke ? '撤回权限' : (voteData.duration > 0 ? `禁言${voteData.duration}分钟` : '踢出群聊')}`)
+      if (!voteData.isRevoke) {
+        const action = voteData.duration > 0  ? session.bot.muteGuildMember(voteData.guildId, voteData.targetId, voteData.duration * 60000) : session.bot.kickGuildMember(voteData.guildId, voteData.targetId)
+        action.catch(error => this.sendAndRecall(session, `对 ${voteData.targetName} 的操作失败: ${error.message}`))
+      }
     } else {
-      this.sendAndRecall(session, content.includes('y') ? `已投支持票，当前：${Array.from(voteData.approvers.values()).join(', ')}`  : `已投反对票，当前：${Array.from(voteData.rejecters.values()).join(', ')}`)
+      const currentVoters = Array.from(isApprove ? voteData.approvers.values() : voteData.rejecters.values()).join(', ')
+      this.sendAndRecall(session, `已投${isApprove ? '支持' : '反对'}票，当前：${currentVoters}`)
     }
   }
 
   clearResource() {
-    for (const v of this.activeVotes.values()) clearTimeout(v.timer)
+    this.activeVotes.forEach(v => clearTimeout(v.timer))
     this.activeVotes.clear()
+    this.revokeUsers.clear()
   }
 }
