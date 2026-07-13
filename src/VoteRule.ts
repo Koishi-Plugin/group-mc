@@ -8,6 +8,7 @@ const GROUP_ID_MAP: Record<number, string> = {
 
 export class VoteRule {
   private revokeUsers = new Set<string>()
+  private revokeLogs = new Map<string, any[]>()
   private activeVotes = new Map<string, { guildId: string, guildName: string, targetId: string, targetName: string,
     messageId: string, duration: number, approvers: Map<string, string>, rejecters: Map<string, string>, timer: NodeJS.Timeout, isRevoke: boolean }>()
   constructor(private checkPermission: (session: Session, groups: string[], requireAdmin?: boolean) => boolean, private ratio: string, private allowedListen: string[], private mgmtGroups: string[]) {}
@@ -51,6 +52,7 @@ export class VoteRule {
         }
         if (!this.checkPermission(session, this.allowedListen, true)) return
         if (!this.revokeUsers.has(`${session.userId}-${session.guildId}-${session.quote.user.id}`)) return
+        this.revokeLogs.get(`${session.guildId}-${session.quote.user.id}`)?.push({ type: 'node', data: { name: session.quote.user.name, uin: session.quote.user.id, content: session.quote.content } })
         try { await (session as any).onebot.deleteMsg(session.quote.id) } catch (error) {}
       })
   }
@@ -76,11 +78,15 @@ export class VoteRule {
       clearTimeout(voteData.timer)
       this.activeVotes.delete(voteKey)
       if (!isApproved) return this.sendAndRecall(session, `已放弃对 ${voteData.targetName} 的操作`)
-      voteData.approvers.forEach((_, voterId) => {
-        const permKey = `${voterId}-${voteData.guildId}-${voteData.targetId}`
-        this.revokeUsers.add(permKey)
-        setTimeout(() => this.revokeUsers.delete(permKey), 300000)
-      })
+      const targetKey = `${voteData.guildId}-${voteData.targetId}`
+      this.revokeLogs.set(targetKey, [])
+      voteData.approvers.forEach((_, vId) => this.revokeUsers.add(`${vId}-${targetKey}`))
+      setTimeout(async () => {
+        const logs = this.revokeLogs.get(targetKey)
+        if (logs?.length) for (const gid of this.mgmtGroups) await (session.bot as any).internal.sendGroupForwardMsg(gid, logs).catch(() => {})
+        voteData.approvers.forEach((_, vId) => this.revokeUsers.delete(`${vId}-${targetKey}`))
+        this.revokeLogs.delete(targetKey)
+      }, 300000)
       session.bot.sendMessage(session.guildId!, `已对 ${voteData.targetName} 执行：${voteData.isRevoke ? '撤回权限' : (voteData.duration > 0 ? `禁言${voteData.duration}分钟` : '踢出群聊')}`)
       if (!voteData.isRevoke) {
         const action = voteData.duration > 0  ? session.bot.muteGuildMember(voteData.guildId, voteData.targetId, voteData.duration * 60000) : session.bot.kickGuildMember(voteData.guildId, voteData.targetId)
@@ -96,5 +102,6 @@ export class VoteRule {
     this.activeVotes.forEach(v => clearTimeout(v.timer))
     this.activeVotes.clear()
     this.revokeUsers.clear()
+    this.revokeLogs.clear()
   }
 }
