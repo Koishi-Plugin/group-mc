@@ -45,8 +45,12 @@ export class VoteRule {
       .usage('回复指定消息来撤回对应内容。')
       .action(async ({ session }: { session: Session }) => {
         if (!session.quote?.id || !session.quote?.user?.id) return this.sendAndRecall(session, '请回复需要撤回的消息')
-        if (!this.revokeUsers.has(`${session.userId}-${session.guildId}-${session.quote?.user?.id}`)) return
+        if (session.quote.user.id === session.selfId) {
+          try { await session.bot.deleteMessage(session.guildId!, session.quote.id) } catch (error) {}
+          return
+        }
         if (!this.checkPermission(session, this.allowedListen, true)) return
+        if (!this.revokeUsers.has(`${session.userId}-${session.guildId}-${session.quote.user.id}`)) return
         try { await (session as any).onebot.deleteMsg(session.quote.id) } catch (error) {}
       })
   }
