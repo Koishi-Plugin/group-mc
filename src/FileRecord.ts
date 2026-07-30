@@ -29,19 +29,42 @@ export class FileRecord {
     }
   }
 
+  private async fetchFileUrl(session: Session, fileId: string, fileName: string, fileSize: number): Promise<{ name: string; size: number; url: string } | null> {
+    const api = session.bot.internal || (session as any).onebot || (session.bot as any).onebot
+    if (!api) return null
+    if (session.channelId) {
+      try {
+        const resp = api.getGroupFileUrl ? await api.getGroupFileUrl(+session.channelId, fileId).catch(() => null) : await api._request?.('get_group_file_url', { group_id: +session.channelId, file_id: fileId }).catch(() => null)
+        const url = typeof resp?.data === 'string' ? resp.data : resp?.data?.url || resp?.url
+        if (url?.trim() && !url.startsWith('file://')) return { name: fileName, size: fileSize, url }
+      } catch {}
+    }
+    try {
+      const resp = api.getFile ? await api.getFile(fileId).catch(() => null) : await api._request?.('get_file', { file_id: fileId }).catch(() => null)
+      const data = resp?.data || resp
+      const url = typeof data === 'string' ? data : data?.url
+      if (url?.trim() && !url.startsWith('file://')) return { name: data?.file_name || fileName, size: data?.file_size ? +data.file_size : fileSize, url }
+      if (data?.base64) return { name: fileName, size: fileSize, url: `data:application/octet-stream;base64,${data.base64}` }
+    } catch {}
+    return null
+  }
+
   async receiveFile(element: any, session: Session): Promise<void> {
     if (!this.validate(session, this.targetGroups)) return
-    const { channelId, userId, messageId } = session
+    const { channelId, userId } = session
     let fileInfo: { name: string; size: number; url: string } | null = null
-
-    const sourceMessage = await session.bot.internal.getMsg(messageId).catch(() => null)
-    const messageData = sourceMessage && Array.isArray(sourceMessage.message) ? sourceMessage.message.find((node: any) => node.type === 'file')?.data : null
-    if (messageData?.file && messageData.file_size && messageData.url) {
-      fileInfo = { name: messageData.file, size: parseInt(messageData.file_size, 10), url: messageData.url }
-    } else {
-      const { file, 'file-size': attrSize, src } = element.attrs
-      if (file && attrSize && src) fileInfo = { name: file, size: parseInt(attrSize, 10), url: src }
+    const msg = await session.bot.internal.getMsg(session.messageId).catch(() => null)
+    const data = msg?.message?.find?.((n: any) => n.type === 'file')?.data
+    if (data?.file && data.file_size) {
+      const name = data.file, size = +data.file_size
+      if (data.url?.trim()) fileInfo = { name, size, url: data.url }
+      else if (data.file_id || element.attrs.fileId) fileInfo = await this.fetchFileUrl(session, data.file_id || element.attrs.fileId, name, size)
     }
+    if (!fileInfo) {
+      const { file, 'file-size': attrSize, src } = element.attrs
+      if (file && attrSize && /^https?:\/\//.test(src)) fileInfo = { name: file, size: +attrSize, url: src }
+    }
+    if (!fileInfo) this.context.logger.warn('获取链接失败:', element.attrs)
     if (!fileInfo || fileInfo.size > 16 * 1024 * 1024 || !FILE_TYPES.some(ext => fileInfo!.name.toLowerCase().endsWith(ext))) return
 
     const currentTime = Date.now()
@@ -79,7 +102,10 @@ export class FileRecord {
     let targets: { recordId: string; uploaderId: string }[] = []
     if (referenceId && channelData[referenceId]) {
       targets = [{ recordId: channelData[referenceId][0], uploaderId: referenceId }]
-    } else if (this.validate(session, this.targetGroups, true)) {
+    } else if (referenceId) {
+      this.context.logger.warn(`获取引用失败: ${referenceId}`, session.elements)
+    }
+    if (!targets.length && this.validate(session, this.targetGroups, true)) {
       targets = Object.entries(channelData)
         .filter(([, info]) => currentTime - info[1] <= this.timeout * 60000)
         .map(([uId, info]) => ({ recordId: info[0], uploaderId: uId }))
