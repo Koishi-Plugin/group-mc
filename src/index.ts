@@ -40,6 +40,7 @@ const ADMIN_LIST = [
   '3260203441', // 陈梦泽
   '3096499384', // 祷祷祷祷
   '2531493755', // Shulker
+  '2505084982', // Timicasto
   '1594258388', // biantwin
   '3515960079', // Minecraft
   '2247380761' // Konstantyn
