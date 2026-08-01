@@ -55,6 +55,7 @@ export interface Config {
   replyMode: 'none' | 'quote' | 'at'
   recordTime: number
   voteRatio: string
+  voteReaction: boolean
   extraGroup: string
 }
 
@@ -71,6 +72,7 @@ export const Config: Schema<Config> = Schema.intersect([
     replyMode: Schema.union([Schema.const('none').description('无'), Schema.const('quote').description('回复'), Schema.const('at').description('艾特')]).default('quote').description('回复方式'),
     recordTime: Schema.number().default(2).description('记录时间'),
     voteRatio: Schema.string().default('3:1').description('投票比例'),
+    voteReaction: Schema.boolean().default(true).description('回应投票'),
     extraGroup: Schema.string().default('').description('调试群组'),
   }).description('参数配置'),
 ])
@@ -91,7 +93,7 @@ export function apply(context: Context, config: Config) {
   const keyword = config.keywordRule !== false ? new Keyword(context, keywordTarget, validate, config.replyMode, config.enableOcr) : null
   const mute = config.timeMute !== false ? new AutoMute(context, errorTarget, ADMIN_LIST, config.timeRange) : null
   const record = config.recordFile ? new FileRecord(context, errorTarget, validate, config.recordTime) : null
-  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio, allTarget, mgmtTarget) : null
+  const vote = config.voteBan ? new VoteRule(validate, config.voteRatio, allTarget, mgmtTarget, config.voteReaction) : null
 
   const root = context.command('mcgroup', 'MC 群组管理')
   keyword?.registerCommands(root)
