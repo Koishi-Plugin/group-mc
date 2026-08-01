@@ -39,7 +39,8 @@ export class FileRecord {
     const name = data?.file || attrs.file
     const size = data?.file_size ? +data.file_size : (attrs.fileSize || attrs['file-size']) ? +(attrs.fileSize || attrs['file-size']) : 0
     const fileId = data?.file_id || attrs.fileId
-
+    let urlResp: any = null
+    let fileResp: any = null
     if (data?.url?.trim() && !data.url.startsWith('file://')) {
       fileInfo = { name, size, url: data.url }
     } else if (/^https?:\/\//.test(attrs.src)) {
@@ -48,13 +49,13 @@ export class FileRecord {
       const api = session.bot.internal || (session as any).onebot || (session.bot as any).onebot
       if (api) {
         if (session.channelId) {
-          const resp = await (api.getGroupFileUrl ? api.getGroupFileUrl(+session.channelId, fileId) : api._request?.('get_group_file_url', { group_id: +session.channelId, file_id: fileId })).catch(() => null)
-          const url = typeof resp === 'string' ? resp : (typeof resp?.data === 'string' ? resp.data : resp?.data?.url || resp?.url)
+          urlResp = await (api.getGroupFileUrl ? api.getGroupFileUrl(+session.channelId, fileId) : api._request?.('get_group_file_url', { group_id: +session.channelId, file_id: fileId })).catch((error: any) => error)
+          const url = typeof urlResp === 'string' ? urlResp : (typeof urlResp?.data === 'string' ? urlResp.data : urlResp?.data?.url || urlResp?.url)
           if (url?.trim() && !url.startsWith('file://')) fileInfo = { name, size, url }
         }
         if (!fileInfo) {
-          const resp = await (api.getFile ? api.getFile(fileId) : api._request?.('get_file', { file_id: fileId })).catch(() => null)
-          const respData = resp?.data || resp
+          fileResp = await (api.getFile ? api.getFile(fileId) : api._request?.('get_file', { file_id: fileId })).catch((error: any) => error)
+          const respData = fileResp?.data || fileResp
           const url = typeof respData === 'string' ? respData : respData?.url
           if (url?.trim() && !url.startsWith('file://')) {
             fileInfo = { name: respData?.file_name || name, size: respData?.file_size ? +respData.file_size : size, url }
@@ -64,7 +65,7 @@ export class FileRecord {
         }
       }
     }
-    if (!fileInfo) this.context.logger.warn('获取链接失败:', { name, size, fileId })
+    if (!fileInfo) this.context.logger.warn('获取链接失败:', { name, urlResp, fileResp })
     if (!fileInfo || fileInfo.size > 16 * 1024 * 1024 || !FILE_TYPES.some(ext => fileInfo!.name.toLowerCase().endsWith(ext))) return
 
     const currentTime = Date.now()
