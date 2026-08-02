@@ -50,12 +50,12 @@ export class FileRecord {
       if (api) {
         if (session.channelId) {
           urlResp = await (api.getGroupFileUrl ? api.getGroupFileUrl(+session.channelId, fileId) : api._request?.('get_group_file_url', { group_id: +session.channelId, file_id: fileId })).catch((error: any) => error)
-          const url = typeof urlResp === 'string' ? urlResp : (typeof urlResp?.data === 'string' ? urlResp.data : urlResp?.data?.url || urlResp?.url)
+          const url = typeof urlResp === 'string' ? urlResp : (typeof urlResp?.data === 'string' ? urlResp.data : (urlResp instanceof Error ? null : urlResp?.data?.url || urlResp?.url))
           if (url?.trim() && !url.startsWith('file://')) fileInfo = { name, size, url }
         }
         if (!fileInfo) {
           fileResp = await (api.getFile ? api.getFile(fileId) : api._request?.('get_file', { file_id: fileId })).catch((error: any) => error)
-          const respData = fileResp?.data || fileResp
+          const respData = fileResp instanceof Error ? null : (fileResp?.data || fileResp)
           const url = typeof respData === 'string' ? respData : respData?.url
           if (url?.trim() && !url.startsWith('file://')) {
             fileInfo = { name: respData?.file_name || name, size: respData?.file_size ? +respData.file_size : size, url }
